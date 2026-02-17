@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 코드 블록 스타일 */
+.code-block {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.code-block pre {
+  scrollbar-width: thin;
+  scrollbar-color: #4e4e4e #1e1e1e;
+}
+
+.code-block pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.code-block pre::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.code-block pre::-webkit-scrollbar-thumb {
+  background: #4e4e4e;
+  border-radius: 4px;
+}
+
+.code-block pre::-webkit-scrollbar-thumb:hover {
+  background: #5e5e5e;
+}
+
+/* 대용량 텍스트 최적화 */
+.code-block pre code {
+  display: block;
+  white-space: pre;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
+
+/* placeholder 스타일 */
+[contenteditable][data-placeholder]:empty:before {
+  content: attr(data-placeholder);
+  color: #999;
+  pointer-events: none;
+  position: absolute;
+}
+
+body {
+  font-family: 'Segoe Print', 'Comic Sans MS', 'Klee One', cursive, sans-serif;
+}
+
+/* contentEditable placeholder */
+[contenteditable][data-placeholder]:empty:before {
+  content: attr(data-placeholder);
+  color: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* 이미지 스타일 */
+[contenteditable] img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 10px 0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}

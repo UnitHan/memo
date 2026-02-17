@@ -1,0 +1,15 @@
+[run]
+source = .
+omit = 
+    test_*.py
+    */__pycache__/*
+    */venv/*
+    */build/*
+
+[report]
+precision = 2
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if __name__ == .__main__.:

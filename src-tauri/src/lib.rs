@@ -103,6 +103,49 @@ async fn read_image_as_base64(path: String) -> Result<String, String> {
     Ok(base64_string)
 }
 
+// 음성 녹음을 Music 폴더에 저장
+#[tauri::command]
+async fn save_audio_to_music(data_base64: String, filename: String) -> Result<String, String> {
+    use base64::{engine::general_purpose, Engine as _};
+
+    let data = general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("base64 decode error: {}", e))?;
+
+    // 파일명 보안 처리 (경로 탐색 방지)
+    let safe_name: String = filename
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+
+    // Music 폴더 경로
+    #[cfg(target_os = "windows")]
+    let music_dir = {
+        let userprofile = std::env::var("USERPROFILE")
+            .map_err(|_| "USERPROFILE 환경 변수를 찾을 수 없습니다".to_string())?;
+        std::path::PathBuf::from(userprofile).join("Music")
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let music_dir = {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME 환경 변수를 찾을 수 없습니다".to_string())?;
+        std::path::PathBuf::from(home).join("Music")
+    };
+
+    if !music_dir.exists() {
+        std::fs::create_dir_all(&music_dir)
+            .map_err(|e| format!("Music 폴더 생성 실패: {}", e))?;
+    }
+
+    let save_path = music_dir.join(&safe_name);
+    std::fs::write(&save_path, &data)
+        .map_err(|e| format!("파일 저장 실패: {}", e))?;
+
+    println!("🎵 녹음 저장 완료: {}", save_path.display());
+    Ok(save_path.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -111,7 +154,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![correct_text, read_image_as_base64])
+        .invoke_handler(tauri::generate_handler![correct_text, read_image_as_base64, save_audio_to_music])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -6,6 +6,9 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['NotoSansKR', 'Malgun Gothic', 'sans-serif'],
+      },
       backdropBlur: {
         xs: '2px',
       }

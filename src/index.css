@@ -1,8 +1,30 @@
-@import url('https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap');
+/* NotoSansKR 로컬 폰트 */
+@font-face {
+  font-family: 'NotoSansKR';
+  src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'NotoSansKR';
+  src: url('/fonts/NotoSansKR-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Tauri 투명 윈도우 필수: html/body/root 배경 완전 제거 */
+html,
+body,
+#root {
+  background: transparent !important;
+}
 
 /* 코드 블록 스타일 */
 .code-block {
@@ -40,24 +62,29 @@
   overflow-wrap: normal;
 }
 
-/* placeholder 스타일 */
+/* 검색창 포커스 스타일 */
+.search-focus-box:focus-within {
+  border-color: #7C3AED;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+}
+
+/* placeholder 스타일 - 부모 color 상속 (투명도 따라 자동 전환) */
 [contenteditable][data-placeholder]:empty:before {
   content: attr(data-placeholder);
-  color: #999;
+  color: inherit;
+  opacity: 0.5;
   pointer-events: none;
   position: absolute;
 }
 
 body {
-  font-family: 'Segoe Print', 'Comic Sans MS', 'Klee One', cursive, sans-serif;
+  font-family: 'NotoSansKR', 'Malgun Gothic', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-/* contentEditable placeholder */
-[contenteditable][data-placeholder]:empty:before {
-  content: attr(data-placeholder);
-  color: rgba(0, 0, 0, 0.4);
-  pointer-events: none;
-}
+/* contentEditable placeholder (중복 제거) */
 
 /* 이미지 스타일 */
 [contenteditable] img {

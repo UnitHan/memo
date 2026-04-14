@@ -206,7 +206,7 @@ export function formatAsCode(text: string, type: ContentType): string {
       padding: 8px 12px;
       background: #2d2d2d;
       border-bottom: 1px solid #3e3e3e;
-      font-family: 'Segoe UI', sans-serif;
+      font-family: 'NotoSansKR', 'Malgun Gothic', sans-serif;
       font-size: 11px;
     ">
       <span style="color: #9cdcfe; font-weight: 600; text-transform: uppercase;">CODE</span>

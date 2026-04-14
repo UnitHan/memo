@@ -7,6 +7,11 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
+  // lamejs는 CJS 전용 패키지 → Vite가 ESM으로 pre-bundle 해야 내부 require 체인이 정상 작동
+  optimizeDeps: {
+    include: ['lamejs'],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

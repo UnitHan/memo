@@ -3,12 +3,13 @@
  * Windows 11 스타일 설정 페이지
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { saveApiKey, loadApiKey } from '../utils/apiKeyStorage';
 import { ConfigModal } from '../components/ConfigModal';
+import { AlertModal } from '../components/AlertModal';
 
 interface MemoHistory {
   id: string;
@@ -22,6 +23,19 @@ export const SettingsPage = () => {
   const [memoHistory, setMemoHistory] = useState<MemoHistory[]>([]);
   const [showConfig, setShowConfig] = useState(false);
   const [isConfigMode, setIsConfigMode] = useState(false); // 설정 전용 모드
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // 확인 모달 상태
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText: string;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: '', message: '', confirmText: '확인', onConfirm: () => {} });
 
   useEffect(() => {
     const savedKey = loadApiKey();
@@ -98,10 +112,53 @@ export const SettingsPage = () => {
     localStorage.setItem('memo_history', JSON.stringify(updated));
   };
 
-  // 모든 히스토리 삭제
+  // 검색어에 매칭되는 메모 인덱스 목록
+  const matchedIndices = searchQuery.trim()
+    ? memoHistory.reduce<number[]>((acc, memo, idx) => {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = memo.content;
+        const plainText = (tempDiv.textContent || tempDiv.innerText || '').toLowerCase();
+        if (plainText.includes(searchQuery.trim().toLowerCase())) acc.push(idx);
+        return acc;
+      }, [])
+    : [];
+
+  // 검색창 열기/닫기
+  const handleToggleSearch = () => {
+    if (isSearchOpen) {
+      setIsSearchOpen(false);
+      setSearchQuery('');
+      setSearchMatchIndex(0);
+    } else {
+      setIsSearchOpen(true);
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  };
+
+  // 이전/다음 검색 결과 이동
+  const handleSearchPrev = () => {
+    if (matchedIndices.length === 0) return;
+    setSearchMatchIndex(prev => (prev - 1 + matchedIndices.length) % matchedIndices.length);
+  };
+
+  const handleSearchNext = () => {
+    if (matchedIndices.length === 0) return;
+    setSearchMatchIndex(prev => (prev + 1) % matchedIndices.length);
+  };
+
+  // 모든 히스토리 삭제 (확인 팝업)
   const handleClearHistory = () => {
-    setMemoHistory([]);
-    localStorage.setItem('memo_history', '[]');
+    setConfirmModal({
+      isOpen: true,
+      title: '전체 삭제',
+      message: '저장된 메모를 모두 삭제할까요?\n삭제 후에는 복원할 수 없습니다.',
+      confirmText: '삭제',
+      onConfirm: () => {
+        setMemoHistory([]);
+        localStorage.setItem('memo_history', '[]');
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      },
+    });
   };
 
   // 메모 파일로 저장
@@ -181,7 +238,9 @@ export const SettingsPage = () => {
   <title>메모 - ${timestamp}</title>
   <style>
     body {
-      font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+      font-family: 'NotoSansKR', 'Malgun Gothic', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
       max-width: 800px;
       margin: 40px auto;
       padding: 20px;
@@ -307,7 +366,7 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
   // 설정 전용 모드일 때는 ConfigModal만 전체 화면으로 표시
   if (isConfigMode) {
     return (
-      <div className="relative h-screen bg-[#F3F3F3] flex items-center justify-center" style={{ fontFamily: '"Segoe UI", -apple-system, sans-serif' }}>
+      <div className="relative h-screen bg-[#F3F3F3] flex items-center justify-center">
         <ConfigModal
           isOpen={showConfig}
           onClose={async () => {
@@ -324,132 +383,184 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
   }
 
   return (
-    <div className="relative h-screen bg-[#F3F3F3] flex flex-col overflow-x-hidden" style={{ fontFamily: '"Segoe UI", -apple-system, sans-serif' }}>
-      {/* 상단 헤더 */}
-      <div className="bg-white h-12 flex items-center justify-between px-6 border-b border-[#E0E0E0] flex-shrink-0">
-        <h1 className="text-[14px] text-[#1F1F1F] font-semibold">메모 보관함</h1>
-        <button
-          onClick={() => setShowConfig(true)}
-          className="w-9 h-9 flex items-center justify-center hover:bg-[#F5F5F5] rounded-full transition-colors text-lg"
-          title="설정"
-        >
-          ⚙️
-        </button>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#FFFFFF', fontFamily: "'NotoSansKR', 'Malgun Gothic', sans-serif", overflow: 'hidden' }}>
+
+      {/* ── 파란 헤더 ── */}
+      <div style={{ background: '#1565C0', flexShrink: 0, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px' }}>
+        <h1 style={{ color: '#fff', fontSize: 18, fontWeight: 700, margin: 0 }}>메모 보관함</h1>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {/* 검색 토글 */}
+          <button
+            onClick={handleToggleSearch}
+            title="검색"
+            style={{
+              width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer',
+              background: isSearchOpen ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.18)',
+              color: isSearchOpen ? '#1565C0' : '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/>
+            </svg>
+          </button>
+          {/* 설정 */}
+          <button
+            onClick={() => setShowConfig(true)}
+            title="설정"
+            style={{
+              width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer',
+              background: 'rgba(255,255,255,0.18)', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* 메인 컨텐츠 (스크롤 영역) */}
-      <div className="flex-1 overflow-y-auto px-6 pt-4 pb-2">
-        
-        {/* 메모 히스토리 카드 */}
-        {memoHistory.length > 0 ? (
-          <div className="bg-white rounded-lg p-4 mb-3 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="#0067C0" aria-hidden="true">
-                  <path d="M13 3h-2V1H5v2H3c-1.1 0-2 .9-2 2v9c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM6 2h4v1H6V2zm7 12H3V5h10v9z"/>
-                  <path d="M5 7h6v1H5zM5 9h6v1H5zM5 11h4v1H5z"/>
-                </svg>
-                <h2 className="text-[13px] font-semibold text-[#1F1F1F]">저장된 메모</h2>
-                <span className="text-[11px] text-[#616161] bg-[#F3F3F3] px-2 py-0.5 rounded-full">
-                  {memoHistory.length}개
+      {/* ── 검색창 ── */}
+      {isSearchOpen && (
+        <div style={{ background: '#1565C0', padding: '0 12px 12px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div className="search-focus-box" style={{ flex: 1, display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.95)', borderRadius: 10, padding: '7px 10px', gap: 7, border: '1.5px solid transparent' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#90A4AE" strokeWidth="2.5">
+                <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/>
+              </svg>
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setSearchMatchIndex(0); }}
+                onKeyDown={e => { if (e.key === 'Enter') handleSearchNext(); if (e.key === 'Escape') handleToggleSearch(); }}
+                placeholder="메모 검색..."
+                style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 13, color: '#1A1A1A' }}
+              />
+              {searchQuery && (
+                <span style={{ fontSize: 11, color: '#1565C0', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  {matchedIndices.length > 0 ? `${searchMatchIndex + 1}/${matchedIndices.length}` : '0/0'}
                 </span>
+              )}
+            </div>
+            <button onClick={handleSearchPrev} disabled={matchedIndices.length === 0}
+              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.18)', color: '#fff', opacity: matchedIndices.length === 0 ? 0.35 : 1, fontSize: 14 }}>∧</button>
+            <button onClick={handleSearchNext} disabled={matchedIndices.length === 0}
+              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.18)', color: '#fff', opacity: matchedIndices.length === 0 ? 0.35 : 1, fontSize: 14 }}>∨</button>
+            <button onClick={handleToggleSearch}
+              style={{ width: 30, height: 30, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.18)', color: '#fff', fontSize: 13 }}>✕</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 스크롤 컨텐츠 ── */}
+      <div style={{ flex: 1, overflowY: 'auto', background: '#F0F4F8', padding: '16px 14px 10px' }}>
+
+        {memoHistory.length > 0 ? (
+          <>
+            {/* 섹션 헤더 */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, padding: '0 4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#90A4AE', letterSpacing: 1 }}>저장된 메모</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: '#1565C0', borderRadius: 20, padding: '1px 8px' }}>{memoHistory.length}</span>
               </div>
               <button
                 onClick={handleClearHistory}
-                className="text-[11px] text-[#D32F2F] hover:bg-[#FFEBEE] px-2 py-1 rounded transition-colors"
-              >
-                전체 삭제
-              </button>
+                style={{ fontSize: 11, color: '#EF5350', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 8px', borderRadius: 6 }}
+              >전체 삭제</button>
             </div>
-            
-            <div className="space-y-2 max-h-[500px] overflow-y-auto">
-              {memoHistory.map((memo) => (
-                <div
-                  key={memo.id}
-                  className="group bg-[#F9F9F9] hover:bg-[#F3F3F3] border border-[#E0E0E0] rounded p-3 transition-colors"
-                >
-                  <div className="flex gap-2 items-start">
-                    <div className="flex-1 min-w-0">
-                      <div 
-                        className="text-[12px] text-[#333] line-clamp-3 break-words mb-2"
-                        style={{
-                          overflow: 'hidden',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 3,
-                          WebkitBoxOrient: 'vertical',
-                          wordBreak: 'break-word'
-                        }}
-                        dangerouslySetInnerHTML={{ 
-                          __html: memo.content
-                            // 이미지를 아이콘으로 대체
-                            .replace(
-                              /<img[^>]+>/g, 
-                              '<span style="color: #0067C0; font-weight: 600;">🖼️ [이미지]</span>'
-                            )
-                            // 코드 블록을 축약 레이블로 대체 (언어명 단순화)
-                            .replace(
-                              /<div class="code-block"[\s\S]*?<span[^>]*>([^<]+)<\/span>[\s\S]*?<\/div><br\s*\/?>/gi,
-                              '<span style="display: inline-block; background: #1e1e1e; color: #9cdcfe; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; margin: 4px 0;">💻 [코드]</span> '
-                            )
-                        }}
-                      />
-                      <p className="text-[10px] text-[#999]">
-                        {new Date(memo.timestamp).toLocaleString('ko-KR', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-1 flex-shrink-0">
-                      <button
-                        onClick={() => handleRestoreMemo(memo)}
-                        className="w-7 h-7 flex items-center justify-center bg-[#0067C0] hover:bg-[#005A9E] text-white rounded text-[11px] transition-colors"
-                        title="복원"
-                      >
-                        ↩️
-                      </button>
-                      <button
-                        onClick={() => handleSaveMemo(memo)}
-                        className="w-7 h-7 flex items-center justify-center bg-[#10B981] hover:bg-[#059669] text-white rounded text-[11px] transition-colors"
-                        title="파일로 저장"
-                      >
-                        💾
-                      </button>
-                      <button
-                        onClick={() => handleDeleteMemo(memo.id)}
-                        className="w-7 h-7 flex items-center justify-center bg-[#F5F5F5] hover:bg-[#E0E0E0] text-[#D32F2F] rounded text-[11px] transition-colors"
-                        title="삭제"
-                      >
-                        🗑️
-                      </button>
+
+            {/* 메모 카드 목록 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {memoHistory.map((memo, idx) => {
+                const isMatch = matchedIndices.includes(idx);
+                const isFocused = isMatch && matchedIndices[searchMatchIndex] === idx;
+
+                // 순수 텍스트 미리보기 추출
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = memo.content
+                  .replace(/<img[^>]+>/g, '[이미지]')
+                  .replace(/<div class="code-block"[\s\S]*?<\/div><br\s*\/?>/gi, '[코드]');
+                const previewText = (tempDiv.textContent || tempDiv.innerText || '').trim().substring(0, 120);
+
+                const cardBg = isFocused ? '#EDE7F6' : isMatch ? '#F3E5F5' : '#FFF8F0';
+                const cardBorder = isFocused ? '#7C3AED' : isMatch ? '#CE93D8' : 'transparent';
+
+                return (
+                  <div key={memo.id} style={{ background: cardBg, borderRadius: 16, padding: 14, boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: `2px solid ${cardBorder}` }}>
+
+                    {/* 검색 일치 태그 */}
+                    {isMatch && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, background: '#6B21A8', color: '#fff', borderRadius: 20, padding: '2px 8px' }}>🍇 검색 일치</span>
+                        {isFocused && <span style={{ fontSize: 10, color: '#7C3AED', fontWeight: 700 }}>({matchedIndices.indexOf(idx) + 1}/{matchedIndices.length})</span>}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                      {/* 문서 아이콘 */}
+                      <div style={{ width: 42, height: 42, borderRadius: 11, background: '#BBDEFB', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#1565C0">
+                          <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 15h8v2H8zm0-4h8v2H8z"/>
+                        </svg>
+                      </div>
+
+                      {/* 텍스트 */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: '#1A1A1A', lineHeight: 1.5, marginBottom: 4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', wordBreak: 'break-word' }}>
+                          {previewText || '(내용 없음)'}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#90A4AE' }}>
+                          {new Date(memo.timestamp).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+
+                      {/* 액션 버튼 */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                        <button onClick={() => handleRestoreMemo(memo)} title="복원"
+                          style={{ width: 30, height: 30, borderRadius: 8, background: '#1565C0', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                            <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/>
+                          </svg>
+                        </button>
+                        <button onClick={() => handleSaveMemo(memo)} title="파일로 저장"
+                          style={{ width: 30, height: 30, borderRadius: 8, background: '#10B981', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                            <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>
+                          </svg>
+                        </button>
+                        <button onClick={() => handleDeleteMemo(memo.id)} title="삭제"
+                          style={{ width: 30, height: 30, borderRadius: 8, background: '#FFEBEE', border: '1.5px solid #EF5350', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="#EF5350">
+                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          </div>
+          </>
         ) : (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="text-6xl mb-4">📦</div>
-            <h3 className="text-lg font-semibold text-[#666] mb-2">보관된 메모가 없습니다</h3>
-            <p className="text-sm text-[#999]">새 메모 버튼을 누르면 기존 메모가 자동 저장됩니다</p>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', textAlign: 'center' }}>
+            <div style={{ width: 64, height: 64, borderRadius: 18, background: '#BBDEFB', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="#1565C0">
+                <path d="M19 3h-4.18C14.4 1.84 13.3 1 12 1c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm2 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+              </svg>
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#546E7A', marginBottom: 6 }}>보관된 메모가 없습니다</div>
+            <div style={{ fontSize: 12, color: '#90A4AE' }}>새 메모 버튼을 누르면 기존 메모가 자동 저장됩니다</div>
           </div>
         )}
-        
       </div>
 
-      {/* 하단 고정 영역 - Footer */}
-      <div className="bg-white border-t border-[#E0E0E0] px-6 py-3 flex-shrink-0">
-        <div className="text-center py-2">
-          <p className="text-[11px] text-[#999]">
-            Powered by <span className="font-semibold text-[#666]">QA Bulls</span>
-          </p>
-          <p className="text-[10px] text-[#BBB] mt-1">
-            © 2026 All rights reserved
-          </p>
-        </div>
+      {/* ── 푸터 ── */}
+      <div style={{ flexShrink: 0, padding: '11px 16px', background: '#F0F4F8', borderTop: '1px solid #E0E0E0', textAlign: 'center' }}>
+        <p style={{ fontSize: 12, color: '#78909C', margin: 0, fontWeight: 500 }}>
+          Powered by <span style={{ color: '#455A64', fontWeight: 700 }}>QA Bulls</span> © 2026
+        </p>
       </div>
 
       {/* ConfigModal */}
@@ -459,6 +570,18 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
         currentApiKey={apiKey}
         opacity={opacity}
         onSave={handleConfigSave}
+      />
+
+      {/* 전체 삭제 확인 모달 */}
+      <AlertModal
+        isOpen={confirmModal.isOpen}
+        type="warning"
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        cancelText="취소"
+        onConfirm={confirmModal.onConfirm}
+        onCancel={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
       />
     </div>
   );

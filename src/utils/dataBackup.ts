@@ -85,10 +85,11 @@ export async function restoreLocalStorage(): Promise<boolean> {
 
 /**
  * 앱 시작 시 자동 복원 후 주기적 백업 시작
+ * 반환값: true = 백업 데이터에서 복원됨 (업데이트/재설치 감지)
  */
-export async function initDataBackup(): Promise<void> {
+export async function initDataBackup(): Promise<boolean> {
   // 1. 복원 시도 (데이터 손실 시 복구)
-  await restoreLocalStorage();
+  const restored = await restoreLocalStorage();
   
   // 2. 즉시 백업 (최신 상태 저장)
   await backupLocalStorage();
@@ -104,4 +105,5 @@ export async function initDataBackup(): Promise<void> {
   });
   
   console.log('🔄 자동 백업 시스템 활성화 (5분 간격)');
+  return restored;
 }

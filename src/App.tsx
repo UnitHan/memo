@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { open } from '@tauri-apps/plugin-dialog';
 import { detectSensitiveInfo } from './utils/security';
@@ -12,6 +13,7 @@ import { initDataBackup } from './utils/dataBackup';
 import { initNetworkMonitor, isNetworkOnline, waitForNetwork } from './utils/networkMonitor';
 import { KeywordManager } from './components/KeywordManager';
 import { AlertModal } from './components/AlertModal';
+import { VoiceRecorder } from './utils/voiceRecorder';
 
 // Windows Sticky Notes 파스텔 색상 (정확한 복제)
 const STICKY_COLORS = [
@@ -34,6 +36,12 @@ function App() {
   const [showKeywordManager, setShowKeywordManager] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
+  // 음성 녹음 상태
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const voiceRecorderRef = useRef<VoiceRecorder | null>(null);
+
   // 알림 모달 상태
   const [alertModal, setAlertModal] = useState<{
     isOpen: boolean;
@@ -53,8 +61,19 @@ function App() {
 
   useEffect(() => {
     // 📦 데이터 백업 시스템 초기화 (최우선)
-    initDataBackup().then(() => {
+    initDataBackup().then((restored) => {
       console.log('🔄 백업 시스템 활성화 완료');
+      if (restored) {
+        // 업데이트/재설치 후 메모 자동 복원됨을 사용자에게 알림
+        console.log('✅ 이전 메모 데이터 자동 복원 완료');
+        setAlertModal({
+          isOpen: true,
+          type: 'alert',
+          title: '✅ 메모 복원 완료',
+          message: '업데이트 전 메모가 자동으로 복원되었습니다.\n메모 보관함(⋯)에서 확인하세요.',
+          onConfirm: () => setAlertModal(prev => ({ ...prev, isOpen: false })),
+        });
+      }
     }).catch((error) => {
       console.error('❌ 백업 시스템 초기화 실패:', error);
     });
@@ -64,6 +83,14 @@ function App() {
       () => console.log('✅ 네트워크 재연결 - AI 교정 다시 사용 가능'),
       () => console.warn('❌ 네트워크 연결 끊김 - AI 교정 사용 불가')
     );
+
+    // 🎨 투명도 실시간 미리보기 이벤트 수신 (설정 창에서 슬라이더 드래그 시)
+    let unlistenOpacity: (() => void) | undefined;
+    listen<number>('opacity-preview', (e) => {
+      setOpacity(e.payload);
+      // localStorage도 즉시 동기화 → focus 이벤트 시 구값으로 되돌아가는 버그 방지
+      localStorage.setItem('window_opacity', e.payload.toString());
+    }).then(fn => { unlistenOpacity = fn; });
     
     const savedKey = loadApiKey();
     console.log('🔑 localStorage에서 API 키 로드:', savedKey ? `***${savedKey.slice(-8)}` : '비어있음');
@@ -219,6 +246,7 @@ function App() {
       document.removeEventListener('mousedown', handleMouseDown, true);
       document.removeEventListener('click', handleCodeBlockButtons);
       cleanupNetworkMonitor();
+      unlistenOpacity?.();
     };
   }, []);
 
@@ -244,15 +272,8 @@ function App() {
         console.log('🔑 API 키 갱신됨 (focus):', `***${currentKey.slice(-8)}`);
       }
       
-      // 투명도 재로드
-      const savedOpacity = localStorage.getItem('window_opacity');
-      if (savedOpacity) {
-        const opacityValue = parseFloat(savedOpacity);
-        if (opacityValue !== opacity) {
-          setOpacity(opacityValue);
-          console.log('💎 투명도 갱신됨 (focus):', Math.round(opacityValue * 100) + '%');
-        }
-      }
+      // 💡 투명도는 focus 시 재로드하지 않음
+      // (설정 창 슬라이더 이벤트 & 저장 버튼으로만 변경 가능)
     };
 
     window.addEventListener('focus', handleFocus);
@@ -489,8 +510,8 @@ function App() {
       const settingsWindow = new WebviewWindow('settings', {
         url: fullUrl,
         title: openConfigModal ? 'AI 메모장 설정' : '메모 보관함',
-        width: 360,
-        height: 560,
+        width: 400,
+        height: 640,
         center: true,
         resizable: false,
         alwaysOnTop: true,
@@ -521,15 +542,63 @@ function App() {
     console.log('🚪 종료 시작');
     getCurrentWindow().close();
   };
+  // 음성 녹음 시작
+  const handleStartRecording = async () => {
+    try {
+      const recorder = new VoiceRecorder();
+      voiceRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      setInterimTranscript('');
 
+      await recorder.start(
+        // 수신 부분 텍스트: 최종 결과인 경우 메모에 삽입, 중간 결과는 상태로만
+        (text, isFinal) => {
+          if (isFinal) {
+            setInterimTranscript('');
+            if (editorRef.current) {
+              editorRef.current.focus();
+              document.execCommand('insertText', false, text + ' ');
+              setText(editorRef.current.innerHTML);
+            }
+          } else {
+            setInterimTranscript(text);
+          }
+        },
+        (seconds) => setRecordingSeconds(seconds),
+      );
+    } catch (err) {
+      setIsRecording(false);
+      console.error('마이크 접근 실패:', err);
+      await showAlert('마이크에 접근할 수 없습니다.\nWindows 설정 > 개인 정보 > 마이크 마이크 접수를 확인해주세요.');
+    }
+  };
+
+  // 녹음 중지 + MP3 저장
+  const handleStopRecording = async () => {
+    setIsRecording(false);
+    setInterimTranscript('');
+    const recorder = voiceRecorderRef.current;
+    voiceRecorderRef.current = null;
+    if (!recorder) return;
+
+    try {
+      const savedPath = await recorder.stop();
+      await showAlert(`🎵 MP3 저장 완료!\n${savedPath}`);
+    } catch (err) {
+      await showAlert(`❌ 녹음 저장 실패\n${err}`);
+    }
+  };
   // 새 메모 생성
   const handleNewMemo = () => {
     if (text.trim() || correctedText.trim()) {
       setAlertModal({
         isOpen: true,
         type: 'confirm',
-        title: '🗒️ 새 메모',
+        title: '새 메모',
         message: '현재 메모를 지우고 새 메모를 작성하시겠습니까?',
+        confirmText: '확인',
+        cancelText: '취소',
         onConfirm: () => {
           // 기존 메모를 히스토리에 저장
           const contentToSave = correctedText || text;
@@ -684,30 +753,31 @@ function App() {
   const currentColor = STICKY_COLORS[colorIndex];
   const nextColor = () => setColorIndex((colorIndex + 1) % STICKY_COLORS.length);
 
-  // RGB를 RGBA로 변환 (투명도 적용)
-  const applyOpacity = (rgb: string, opacity: number) => {
-    const match = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-    if (match) {
-      return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${opacity})`;
-    }
-    return rgb;
-  };
+  // 투명도 < 45% 시 텍스트를 흰색으로 → 어두운 배경에서도 읽힘
+  const isDimmed = opacity < 0.45;
+  const textColor = isDimmed ? '#fff' : currentColor.text;
+  const textShadowStr = isDimmed ? '0 1px 3px rgba(0,0,0,0.85)' : 'none';
 
   return (
+    <>
     <div
       className="h-screen flex flex-col relative"
       style={{
-        backgroundColor: applyOpacity(currentColor.bg, opacity),
-        color: currentColor.text,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-        fontFamily: 'Segoe UI, Malgun Gothic, sans-serif',
+        /* CSS opacity 로 헤더·에디터·툴바·버튼 전체가 균일하게 투명해짐 */
+        opacity: opacity,
+        backgroundColor: currentColor.bg,
+        color: textColor,
+        textShadow: textShadowStr,
+        boxShadow: opacity > 0.05 ? '0 8px 24px rgba(0,0,0,0.15)' : 'none',
+        fontFamily: "'NotoSansKR', 'Malgun Gothic', sans-serif",
+        transition: 'opacity 0.1s, color 0.3s, text-shadow 0.3s',
       }}
     >
       {/* Windows Sticky Notes 헤더 */}
       <div
-        className="h-12 flex items-center justify-between px-5 border-b"
+        className="h-12 flex items-center justify-between px-3 border-b"
         style={{
-          borderBottomColor: 'rgba(0,0,0,0.08)',
+          borderBottomColor: 'rgba(0,0,0,0.1)',
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
@@ -720,7 +790,27 @@ function App() {
           ➕
         </button>
 
-        <div 
+        {/* 투명도 슬라이더 (중앙) */}
+        <div
+          style={{ WebkitAppRegion: 'no-drag', display: 'flex', alignItems: 'center', flex: 1, justifyContent: 'center', padding: '0 10px' } as React.CSSProperties}
+        >
+          <input
+            type="range" min="0" max="1" step="0.05"
+            value={opacity}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setOpacity(v);
+              localStorage.setItem('window_opacity', v.toString());
+            }}
+            style={{
+              width: '100%', height: 4, cursor: 'pointer',
+              accentColor: 'rgba(0,0,0,0.5)',
+            }}
+            title={`투명도: ${Math.round(opacity * 100)}%`}
+          />
+        </div>
+
+        <div
           className="flex gap-1"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
@@ -742,8 +832,9 @@ function App() {
       </div>
 
       {/* 텍스트 입력 영역 */}
-      <div
-        ref={editorRef}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div
+          ref={editorRef}
         contentEditable
         suppressContentEditableWarning
         onInput={(e) => {
@@ -790,7 +881,7 @@ function App() {
           }
         }}
         onWheel={handleWheel}
-        className="flex-1 w-full px-6 py-3 resize-none outline-none overflow-auto"
+        className="w-full px-6 py-3 resize-none outline-none overflow-auto"
         style={{
           backgroundColor: 'transparent',
           fontSize: `${fontSize}px`,
@@ -798,15 +889,28 @@ function App() {
           fontFamily: 'inherit',
           color: 'inherit',
           minHeight: '100px',
+          height: '100%',
         }}
         data-placeholder="메모를 작성하세요..."
       />
+      {/* 받아쓰기 중간 결과 오버레이 */}
+      {interimTranscript && (
+        <div style={{
+          position: 'absolute', bottom: 8, left: 12, right: 12,
+          background: 'rgba(239,68,68,0.85)', color: '#fff',
+          borderRadius: 8, padding: '4px 10px', fontSize: 12,
+          pointerEvents: 'none', backdropFilter: 'blur(4px)',
+        }}>
+          🎤 {interimTranscript}
+        </div>
+      )}
+      </div>
 
       {/* 하단 포맷 툴바 */}
       <div 
         className="flex items-center justify-between px-5 py-2 border-t"
         style={{
-          borderTopColor: 'rgba(0,0,0,0.08)',
+          borderTopColor: 'rgba(0,0,0,0.1)',
         }}
       >
         <div className="flex gap-1">
@@ -855,6 +959,37 @@ function App() {
         </div>
 
         <div className="flex gap-2">
+          {/* 🎹 음성 녹음 버튼 (AI 버튼 왼쪽) */}
+          {!isRecording ? (
+            <button
+              onClick={handleStartRecording}
+              className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110"
+              style={{ background: '#ef4444', fontSize: 14, flexShrink: 0 }}
+              title="음성 녹음 시작 (받아쓰기 포함)"
+            >
+              🎤
+            </button>
+          ) : (
+            <button
+              onClick={handleStopRecording}
+              className="flex items-center gap-1 px-2 rounded-full transition-all"
+              style={{
+                background: '#ef4444',
+                fontSize: 12,
+                animation: 'pulse 1s infinite',
+                minWidth: 36,
+                height: 32,
+                justifyContent: 'center',
+              }}
+              title="녹음 중지 + MP3 저장"
+            >
+              <span style={{ fontSize: 14 }}>⏹️</span>
+              <span style={{ color: '#fff', fontSize: 10, fontWeight: 700 }}>
+                {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')}
+              </span>
+            </button>
+          )}
+
           {/* AI 교정 버튼 */}
           <button
             onClick={handleCorrect}
@@ -897,22 +1032,23 @@ function App() {
         </div>
       </div>
 
-      {/* 모달 */}
-      <KeywordManager
-        isOpen={showKeywordManager}
-        onClose={() => setShowKeywordManager(false)}
-      />
-      <AlertModal
-        isOpen={alertModal.isOpen}
-        type={alertModal.type}
-        title={alertModal.title}
-        message={alertModal.message}
-        confirmText={alertModal.confirmText}
-        cancelText={alertModal.cancelText}
-        onConfirm={alertModal.onConfirm}
-        onCancel={alertModal.onCancel}
-      />
     </div>
+    {/* 모달: opacity div 바깥 → 항상 완전 불투명 */}
+    <KeywordManager
+      isOpen={showKeywordManager}
+      onClose={() => setShowKeywordManager(false)}
+    />
+    <AlertModal
+      isOpen={alertModal.isOpen}
+      type={alertModal.type}
+      title={alertModal.title}
+      message={alertModal.message}
+      confirmText={alertModal.confirmText}
+      cancelText={alertModal.cancelText}
+      onConfirm={alertModal.onConfirm}
+      onCancel={alertModal.onCancel}
+    />
+    </>
   );
 }
 

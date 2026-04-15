@@ -509,7 +509,7 @@ function App() {
       
       const settingsWindow = new WebviewWindow('settings', {
         url: fullUrl,
-        title: openConfigModal ? 'AI 메모장 설정' : '메모 보관함',
+        title: openConfigModal ? 'AI 메모장 설정' : '메모',
         width: 400,
         height: 640,
         center: true,
@@ -584,7 +584,7 @@ function App() {
 
     try {
       const savedPath = await recorder.stop();
-      await showAlert(`🎵 MP3 저장 완료!\n${savedPath}`);
+      await showAlert(`🎵 저장 완료!\n${savedPath}`);
     } catch (err) {
       await showAlert(`❌ 녹음 저장 실패\n${err}`);
     }

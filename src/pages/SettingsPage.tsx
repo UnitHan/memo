@@ -28,6 +28,10 @@ export const SettingsPage = () => {
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // 이용약관 / 개인정보처리방침 모달
+  const [showTerms, setShowTerms] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+
   // 확인 모달 상태
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -561,6 +565,11 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
         <p style={{ fontSize: 12, color: '#78909C', margin: 0, fontWeight: 500 }}>
           Powered by <span style={{ color: '#455A64', fontWeight: 700 }}>QA Bulls</span> © 2026
         </p>
+        <p style={{ margin: '4px 0 0', fontSize: 11 }}>
+          <button onClick={() => setShowTerms(true)} style={{ background: 'none', border: 'none', color: '#1565C0', fontSize: 11, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>이용약관</button>
+          <span style={{ color: '#B0BEC5', margin: '0 6px' }}>|</span>
+          <button onClick={() => setShowPrivacy(true)} style={{ background: 'none', border: 'none', color: '#1565C0', fontSize: 11, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>개인정보처리방침</button>
+        </p>
       </div>
 
       {/* ConfigModal */}
@@ -571,6 +580,67 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
         opacity={opacity}
         onSave={handleConfigSave}
       />
+
+      {/* 이용약관 모달 */}
+      {showTerms && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div onClick={() => setShowTerms(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)' }} />
+          <div style={{ position: 'relative', width: '100%', maxHeight: '80vh', background: '#fff', borderRadius: '20px 20px 0 0', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 24px rgba(0,0,0,0.15)' }}>
+            {/* 헤더 */}
+            <div style={{ background: '#1565C0', borderRadius: '20px 20px 0 0', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+              <span style={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>이용약관</span>
+              <button onClick={() => setShowTerms(false)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', width: 28, height: 28, color: '#fff', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+            </div>
+            {/* 본문 */}
+            <div style={{ overflowY: 'auto', padding: '16px 20px', flex: 1, fontSize: 13, color: '#37474F', lineHeight: 1.7 }}>
+              <p><strong>제1조 (목적)</strong><br />본 약관은 QA Bulls(이하 &quot;회사&quot;)가 제공하는 AI 메모장 애플리케이션(이하 &quot;서비스&quot;)의 이용 조건 및 절차, 회사와 이용자 간의 권리·의무 및 책임사항을 규정함을 목적으로 합니다.</p>
+              <p><strong>제2조 (서비스 내용)</strong><br />서비스는 다음 기능을 제공합니다.<br />• Gemini AI 기반 텍스트 맞춤법·문법 교정<br />• 메모 작성, 저장 및 관리<br />• 음성 녹음 및 받아쓰기<br />• 코드·로그 자동 포맷팅<br />• 민감 정보 자동 감지</p>
+              <p><strong>제3조 (이용자의 의무)</strong><br />① 이용자는 서비스 이용 시 관련 법령 및 본 약관을 준수해야 합니다.<br />② 이용자는 타인의 개인정보, 기업 기밀 등 민감한 정보를 AI 교정 기능에 입력하지 않아야 합니다.<br />③ 이용자는 서비스를 불법적인 목적으로 사용해서는 안 됩니다.</p>
+              <p><strong>제4조 (API 키 관리)</strong><br />① Gemini API 키는 이용자 본인이 직접 발급받아 사용합니다.<br />② API 키는 기기 내 로컬 저장소에만 저장되며, 회사 서버로 전송되지 않습니다.<br />③ API 키 유출로 인한 피해는 이용자 본인의 책임입니다.</p>
+              <p><strong>제5조 (서비스 제한 및 중단)</strong><br />회사는 다음 경우 서비스 제공을 제한하거나 중단할 수 있습니다.<br />• 서비스 설비 점검·보수 시<br />• 외부 API(Google Gemini) 서비스 장애 시<br />• 기타 불가피한 사유 발생 시</p>
+              <p><strong>제6조 (면책 조항)</strong><br />① 회사는 이용자가 서비스를 통해 얻은 정보의 정확성에 대해 보증하지 않습니다.<br />② AI 교정 결과는 참고용이며, 최종 판단은 이용자 본인이 해야 합니다.<br />③ 이용자의 귀책 사유로 발생한 손해에 대해 회사는 책임지지 않습니다.</p>
+              <p><strong>제7조 (약관 변경)</strong><br />회사는 필요 시 약관을 변경할 수 있으며, 변경 시 앱 업데이트를 통해 공지합니다.</p>
+              <p><strong>제8조 (준거법)</strong><br />본 약관은 대한민국 법률에 따라 해석됩니다.</p>
+              <p style={{ color: '#90A4AE', fontSize: 12 }}>시행일: 2026년 1월 1일</p>
+            </div>
+            {/* 확인 버튼 */}
+            <div style={{ padding: '12px 20px', flexShrink: 0 }}>
+              <button onClick={() => setShowTerms(false)} style={{ width: '100%', background: '#1565C0', color: '#fff', border: 'none', borderRadius: 12, padding: '13px 0', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 개인정보처리방침 모달 */}
+      {showPrivacy && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div onClick={() => setShowPrivacy(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)' }} />
+          <div style={{ position: 'relative', width: '100%', maxHeight: '80vh', background: '#fff', borderRadius: '20px 20px 0 0', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 24px rgba(0,0,0,0.15)' }}>
+            {/* 헤더 */}
+            <div style={{ background: '#1565C0', borderRadius: '20px 20px 0 0', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+              <span style={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>개인정보처리방침</span>
+              <button onClick={() => setShowPrivacy(false)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', width: 28, height: 28, color: '#fff', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+            </div>
+            {/* 본문 */}
+            <div style={{ overflowY: 'auto', padding: '16px 20px', flex: 1, fontSize: 13, color: '#37474F', lineHeight: 1.7 }}>
+              <p>QA Bulls(이하 &quot;회사&quot;)는 이용자의 개인정보를 중요하게 생각하며, 「개인정보 보호법」을 준수합니다.</p>
+              <p><strong>1. 수집하는 개인정보 항목</strong><br />본 서비스는 별도의 회원가입 없이 사용 가능하며, 다음 정보만 기기 내에 저장됩니다.<br />• Gemini API 키 (난독화 처리 후 로컬 저장)<br />• 작성한 메모 내용 (로컬 저장소)<br />• 앱 투명도 등 사용자 설정값 (로컬 저장소)<br />• 음성 녹음 파일 (기기 내 Music 폴더)</p>
+              <p><strong>2. 개인정보 수집 및 이용 목적</strong><br />수집된 정보는 다음 목적으로만 사용됩니다.<br />• API 키: Gemini AI 텍스트 교정 기능 제공<br />• 메모 데이터: 앱 재실행 시 데이터 복원<br />• 설정값: 사용자 환경 유지</p>
+              <p><strong>3. 개인정보 보관 및 파기</strong><br />• 모든 데이터는 이용자의 기기 내에만 저장됩니다.<br />• 회사 서버로 전송되거나 저장되는 데이터는 없습니다.<br />• 앱 삭제 시 로컬 저장 데이터는 자동 삭제됩니다.<br />• 음성 녹음 파일은 이용자가 직접 관리합니다.</p>
+              <p><strong>4. 제3자 제공</strong><br />회사는 이용자의 개인정보를 제3자에게 제공하지 않습니다. 단, Gemini AI 교정 기능 사용 시 입력한 텍스트는 Google의 Gemini API로 전송됩니다.<br />Google의 개인정보처리방침: <span style={{ color: '#1565C0' }}>https://policies.google.com/privacy</span></p>
+              <p><strong>5. 마이크 접근 권한</strong><br />음성 녹음 및 받아쓰기 기능 사용 시 마이크 접근 권한이 필요합니다.<br />• 수집 목적: 음성 녹음 및 텍스트 변환<br />• 저장 위치: 기기 내 Music 폴더 (MP3 파일)<br />• 권한 거부 시: 음성 녹음 기능 사용 불가 (다른 기능은 정상 사용 가능)</p>
+              <p><strong>6. 이용자의 권리</strong><br />이용자는 언제든지 다음 권리를 행사할 수 있습니다.<br />• 앱 내 데이터 삭제 (메모 보관함 &gt; 전체 삭제)<br />• 앱 삭제를 통한 모든 로컬 데이터 삭제<br />• 기기 설정에서 마이크 권한 철회</p>
+              <p><strong>7. 개인정보 보호책임자</strong><br />• 회사명: QA Bulls<br />• 이메일: qabulls.test@gmail.com</p>
+              <p><strong>8. 방침 변경</strong><br />개인정보처리방침 변경 시 앱 업데이트를 통해 공지합니다.</p>
+              <p style={{ color: '#90A4AE', fontSize: 12 }}>시행일: 2026년 1월 1일</p>
+            </div>
+            {/* 확인 버튼 */}
+            <div style={{ padding: '12px 20px', flexShrink: 0 }}>
+              <button onClick={() => setShowPrivacy(false)} style={{ width: '100%', background: '#1565C0', color: '#fff', border: 'none', borderRadius: 12, padding: '13px 0', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 전체 삭제 확인 모달 */}
       <AlertModal

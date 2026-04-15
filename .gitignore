@@ -45,3 +45,8 @@ python-backend/build/
 python-backend/dist/
 python-backend/__pycache__/
 python-backend/*.spec
+
+# MSIX build artifacts
+src-tauri/msix/staging/
+src-tauri/msix/*.msix
+src-tauri/msix/store-assets/

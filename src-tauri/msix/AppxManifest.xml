@@ -8,7 +8,7 @@
   <Identity
     Name="QABulls.AI"
     Publisher="CN=DBF2708E-1A7A-45A4-922A-4B40C76E2C11"
-    Version="1.0.1.0"
+    Version="1.1.1.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

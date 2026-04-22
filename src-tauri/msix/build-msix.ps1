@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $ROOT        = $PSScriptRoot | Split-Path -Parent | Split-Path -Parent  # c:\memo
 $RELEASE_DIR = "$ROOT\src-tauri\target\release"
-$ICONS_DIR   = "$ROOT\src-tauri\icons"
+$APP_ICON    = "$ROOT\icon.png"   # ← 항상 이 파일 사용 (주황색 메모장 아이콘)
 $MSIX_DIR    = "$ROOT\src-tauri\msix"
 $STAGING     = "$MSIX_DIR\staging"
 $STAGING_BIN = "$MSIX_DIR\staging\binaries"
@@ -49,63 +49,52 @@ if (Test-Path $sidecar) {
     }
 }
 
-# ── 4. 아이콘 파일 복사 + 누락 아이콘 생성 ──
-Write-Host "[3/5] 아이콘 파일 준비..."
+# ── 4. 아이콘 생성 (항상 c:\memo\icon.png 기반, 배경 구워 넣음) ──
+Write-Host "[3/5] 아이콘 생성 중..."
 
-# 기본 아이콘 복사 (Store에서 요구하는 파일들)
-$iconMap = @{
-    "Square44x44Logo.png"   = "Square44x44Logo.png"
-    "Square71x71Logo.png"   = "Square71x71Logo.png"
-    "Square150x150Logo.png" = "Square150x150Logo.png"
-    "Square310x310Logo.png" = "Square310x310Logo.png"
-    "StoreLogo.png"         = "StoreLogo.png"
-}
-foreach ($src in $iconMap.Keys) {
-    $srcPath = "$ICONS_DIR\$src"
-    if (Test-Path $srcPath) {
-        Copy-Item $srcPath "$STAGING\Assets\$($iconMap[$src])"
-    }
+# 원본 아이콘 검증
+if (-not (Test-Path $APP_ICON)) {
+    Write-Error "아이콘 파일을 찾을 수 없습니다: $APP_ICON"
+    exit 1
 }
 
-# Wide310x150Logo.png 생성 (없으면 Square150x150Logo 에서 좌우 패딩)
-$wideLogo = "$STAGING\Assets\Wide310x150Logo.png"
-if (-not (Test-Path $wideLogo)) {
-    Write-Host "      Wide310x150Logo.png 생성 중 (Add-Type 방식)..." -ForegroundColor Yellow
-    Add-Type -AssemblyName System.Drawing
-    $src150 = [System.Drawing.Image]::FromFile("$ICONS_DIR\Square150x150Logo.png")
-    $wide = New-Object System.Drawing.Bitmap(310, 150)
-    $g = [System.Drawing.Graphics]::FromImage($wide)
-    $g.Clear([System.Drawing.Color]::Transparent)
-    # 가운데 정렬로 150x150 배치
-    $x = [int]((310 - 150) / 2)
-    $g.DrawImage($src150, $x, 0, 150, 150)
+Add-Type -AssemblyName System.Drawing
+$icon = [System.Drawing.Image]::FromFile($APP_ICON)
+Write-Host "      원본 아이콘: $APP_ICON ($($icon.Width)x$($icon.Height))" -ForegroundColor Green
+
+# 배경색 (icon.png 크림색과 동일)
+$bg = [System.Drawing.Color]::FromArgb(255, 255, 248, 225)
+
+function New-IconFile($path, $w, $h, $iconSize = -1) {
+    if ($iconSize -lt 0) { $iconSize = [Math]::Min($w, $h) }
+    $bmp = New-Object System.Drawing.Bitmap($w, $h)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+    $g.Clear($bg)
+    $x = [int](($w - $iconSize) / 2)
+    $y = [int](($h - $iconSize) / 2)
+    $g.DrawImage($icon, $x, $y, $iconSize, $iconSize)
     $g.Dispose()
-    $src150.Dispose()
-    $wide.Save($wideLogo, [System.Drawing.Imaging.ImageFormat]::Png)
-    $wide.Dispose()
-    Write-Host "      Wide310x150Logo.png 생성 완료" -ForegroundColor Green
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
 }
 
-# SplashScreen.png 생성 (620x300, 가운데 아이콘)
-$splash = "$STAGING\Assets\SplashScreen.png"
-if (-not (Test-Path $splash)) {
-    Write-Host "      SplashScreen.png 생성 중..." -ForegroundColor Yellow
-    Add-Type -AssemblyName System.Drawing
-    $srcIcon = [System.Drawing.Image]::FromFile("$ICONS_DIR\Square310x310Logo.png")
-    $splashImg = New-Object System.Drawing.Bitmap(620, 300)
-    $g = [System.Drawing.Graphics]::FromImage($splashImg)
-    $g.Clear([System.Drawing.Color]::FromArgb(255, 21, 101, 192))  # #1565C0
-    $x = [int]((620 - 200) / 2)
-    $y = [int]((300 - 200) / 2)
-    $g.DrawImage($srcIcon, $x, $y, 200, 200)
-    $g.Dispose()
-    $srcIcon.Dispose()
-    $splashImg.Save($splash, [System.Drawing.Imaging.ImageFormat]::Png)
-    $splashImg.Dispose()
-    Write-Host "      SplashScreen.png 생성 완료" -ForegroundColor Green
-}
+# 정사각형 타일 아이콘 (꽉 채움)
+New-IconFile "$STAGING\Assets\Square44x44Logo.png"   44   44
+New-IconFile "$STAGING\Assets\Square71x71Logo.png"   71   71
+New-IconFile "$STAGING\Assets\Square150x150Logo.png" 150  150
+New-IconFile "$STAGING\Assets\Square310x310Logo.png" 310  310
+New-IconFile "$STAGING\Assets\StoreLogo.png"          50   50
 
-Write-Host "      아이콘 준비 완료" -ForegroundColor Green
+# Wide 타일 (310x150, 아이콘을 세로 기준으로 가운데 배치)
+New-IconFile "$STAGING\Assets\Wide310x150Logo.png"   310  150  150
+
+# 스플래시 (620x300, 아이콘 300px 가운데 배치)
+New-IconFile "$STAGING\Assets\SplashScreen.png"      620  300  300
+
+$icon.Dispose()
+Write-Host "      아이콘 7종 생성 완료 (소스: $APP_ICON)" -ForegroundColor Green
 
 # ── 5. AppxManifest.xml 복사 ──
 Write-Host "[4/5] AppxManifest.xml 복사..."

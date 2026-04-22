@@ -1,10 +1,12 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { open } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { detectSensitiveInfo } from './utils/security';
 import { addToBlockedKeywords } from './utils/keywordDB';
 import { loadApiKey } from './utils/apiKeyStorage';
@@ -25,6 +27,54 @@ const STICKY_COLORS = [
   { name: '회색', bg: 'rgb(224, 224, 224)', text: 'rgb(51, 51, 51)' },
 ];
 
+interface LinkPreviewMeta {
+  title: string;
+  description: string;
+  image: string;
+  domain: string;
+  url: string;
+  favicon: string;
+}
+
+const escHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Rust에서 HTML 파싱 시 한국어가 &#xBA54; 같은 엔티티로 올 수 있으므로 디코딩
+function decodeHtmlEntities(s: string): string {
+  const el = document.createElement('textarea');
+  el.innerHTML = s;
+  return el.value;
+}
+
+const isUrl = (s: string) => /^https?:\/\/[^\s]{4,}$/.test(s);
+
+function buildLinkCardHtml(meta: LinkPreviewMeta): string {
+  const title = escHtml(decodeHtmlEntities(meta.title || meta.domain || meta.url));
+  const desc  = meta.description ? escHtml(decodeHtmlEntities(meta.description)) : '';
+  const img   = meta.image?.startsWith('http')
+    ? `<img src="${escHtml(meta.image)}" style="width:72px;height:52px;border-radius:6px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'">`
+    : '';
+  const copyBtn =
+    `<button data-action="copy-link" data-url="${escHtml(meta.url)}" title="URL 복사"` +
+    ` style="flex-shrink:0;border:none;background:rgba(0,0,0,0.07);border-radius:6px;width:28px;height:28px;` +
+    `cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">` +
+    `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">` +
+    `<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>` +
+    `</svg></button>`;
+  return (
+    `<div contenteditable="false" data-type="link-card" data-url="${escHtml(meta.url)}"` +
+    ` style="border-radius:10px;border:1px solid rgba(0,0,0,0.13);padding:10px 12px;margin:4px 0;` +
+    `display:flex;align-items:center;gap:10px;cursor:pointer;background:rgba(255,255,255,0.5);` +
+    `backdrop-filter:blur(8px);max-width:100%;box-shadow:0 1px 4px rgba(0,0,0,0.08);" data-action="open-link">` +
+    `<img src="${escHtml(meta.favicon)}" width="14" height="14" style="border-radius:2px;flex-shrink:0;margin-top:2px;" onerror="this.style.display='none'">` +
+    `<div style="flex:1;min-width:0;overflow:hidden;">` +
+    `<div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${title}</div>` +
+    (desc ? `<div style="font-size:11px;opacity:0.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;">${desc}</div>` : '') +
+    `<div style="font-size:10px;opacity:0.38;margin-top:3px;">${escHtml(meta.domain)}</div>` +
+    `</div>${img}${copyBtn}</div><br>`
+  );
+}
+
 function App() {
   const [text, setText] = useState('');
   const [correctedText, setCorrectedText] = useState('');
@@ -35,6 +85,11 @@ function App() {
   const [fontSize, setFontSize] = useState(15);
   const [showKeywordManager, setShowKeywordManager] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const isCollapsedRef = useRef(false);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const preCollapseHeight = useRef<number>(500);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // 음성 녹음 상태
   const [isRecording, setIsRecording] = useState(false);
@@ -59,20 +114,25 @@ function App() {
     onConfirm: () => {},
   });
 
+  // 최대화 상태 추적 (커스텀 타이틀바 아이콘 전환용)
+  useEffect(() => {
+    const win = getCurrentWindow();
+    win.isMaximized().then(setIsMaximized).catch(() => {});
+    let unlisten: (() => void) | undefined;
+    win.onResized(async () => {
+      const max = await win.isMaximized().catch(() => false);
+      setIsMaximized(max);
+    }).then(fn => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
   useEffect(() => {
     // 📦 데이터 백업 시스템 초기화 (최우선)
     initDataBackup().then((restored) => {
       console.log('🔄 백업 시스템 활성화 완료');
       if (restored) {
-        // 업데이트/재설치 후 메모 자동 복원됨을 사용자에게 알림
+        // 조용히 복원 (재시작마다 팝업 방지)
         console.log('✅ 이전 메모 데이터 자동 복원 완료');
-        setAlertModal({
-          isOpen: true,
-          type: 'alert',
-          title: '✅ 메모 복원 완료',
-          message: '업데이트 전 메모가 자동으로 복원되었습니다.\n메모 보관함(⋯)에서 확인하세요.',
-          onConfirm: () => setAlertModal(prev => ({ ...prev, isOpen: false })),
-        });
       }
     }).catch((error) => {
       console.error('❌ 백업 시스템 초기화 실패:', error);
@@ -142,6 +202,39 @@ function App() {
     // 코드 블록 버튼 이벤트 위임 (동적 생성되는 버튼 처리)
     const handleCodeBlockButtons = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
+
+      // 링크 카드 복사 버튼 클릭
+      const copyLinkBtn = target.closest('[data-action="copy-link"]') as HTMLElement | null;
+      if (copyLinkBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const url = copyLinkBtn.dataset.url || '';
+        if (url) {
+          writeText(url).then(() => {
+            const svg = copyLinkBtn.querySelector('svg');
+            if (svg) {
+              copyLinkBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+              setTimeout(() => {
+                copyLinkBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+              }, 1500);
+            }
+          }).catch(console.error);
+        }
+        return;
+      }
+
+      // 링크 카드 클릭 처리
+      const card = target.closest('[data-type="link-card"]') as HTMLElement | null;
+      if (card?.dataset?.url) {
+        e.preventDefault();
+        e.stopPropagation();
+        const url = card.dataset.url;
+        if (/^https?:\/\//.test(url)) {
+          openUrl(url).catch(console.error);
+        }
+        return;
+      }
+
       const button = target.closest('button');
       
       console.log('🔍 Click event:', {
@@ -241,10 +334,36 @@ function App() {
     console.log('🎯 이벤트 리스너 등록');
     document.addEventListener('mousedown', handleMouseDown, true);
     document.addEventListener('click', handleCodeBlockButtons);
+
+    // ESC 키로 접기/펼치기 토글
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const win = getCurrentWindow();
+        if (isCollapsedRef.current) {
+          await win.setSize(new LogicalSize(320, preCollapseHeight.current));
+          isCollapsedRef.current = false;
+          setIsCollapsed(false);
+        } else {
+          try {
+            const sz = await win.innerSize();
+            const sf = await win.scaleFactor();
+            const logicalH = Math.round(sz.height / sf);
+            if (logicalH > 44) preCollapseHeight.current = logicalH;
+          } catch { /* 기본값 유지 */ }
+          isCollapsedRef.current = true;
+          setIsCollapsed(true);
+          await win.setSize(new LogicalSize(320, 32));
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
     return () => {
       console.log('🗑️ 이벤트 리스너 해제');
       document.removeEventListener('mousedown', handleMouseDown, true);
       document.removeEventListener('click', handleCodeBlockButtons);
+      document.removeEventListener('keydown', handleKeyDown);
       cleanupNetworkMonitor();
       unlistenOpacity?.();
     };
@@ -342,7 +461,14 @@ function App() {
 
   const handleCorrect = async () => {
     if (!apiKey) {
-      openSettingsWindow(true);  // 설정 모달 자동 열기
+      setAlertModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'API Key 미등록',
+        message: '[보관함 > 설정] 에서 Gemini API Key 등록하세요.',
+        confirmText: '확인',
+        onConfirm: () => setAlertModal(prev => ({ ...prev, isOpen: false })),
+      });
       return;
     }
 
@@ -493,55 +619,70 @@ function App() {
     }
   };
 
-  const openSettingsWindow = async (openConfigModal = false) => {
+  const openSettingsWindow = async (_openConfigModal = false) => {
     try {
-      // 기존 설정 창이 있으면 포커스
-      const existingWindow = await WebviewWindow.getByLabel('settings');
-      if (existingWindow) {
-        await existingWindow.setFocus();
-        return;
-      }
-
-      // 새 설정 윈도우 생성 (전체 URL 사용)
-      const baseUrl = window.location.origin;
-      const hash = openConfigModal ? '#settings?config=true' : '#settings';
-      const fullUrl = `${baseUrl}/${hash}`;
-      
-      const settingsWindow = new WebviewWindow('settings', {
-        url: fullUrl,
-        title: openConfigModal ? 'AI 메모장 설정' : '메모',
-        width: 400,
-        height: 640,
-        center: true,
-        resizable: false,
-        alwaysOnTop: true,
-        decorations: true,
-        transparent: false,
-      });
-
-      // 윈도우가 생성되면 데이터 전달
-      settingsWindow.once('tauri://created', () => {
-        console.log('✅ 설정 윈도우 생성 완료');
-      });
-
-      settingsWindow.once('tauri://error', (e: unknown) => {
-        console.error('❌ 설정 윈도우 생성 실패:', e);
-      });
+      await invoke('open_settings_window');
     } catch (error) {
       console.error('❌ 윈도우 열기 오류:', error);
       await showAlert('설정 창을 열 수 없습니다. 앱을 다시 실행해주세요.');
     }
   };
 
-  const handleMinimize = () => {
-    getCurrentWindow().minimize();
-    console.log('➖ 윈도우 최소화');
+  // 파일 드래그 드롭
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const textExts = ['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log', '.yaml', '.yml', '.toml', '.ini', '.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.css', '.scss'];
+
+    const setup = async () => {
+      unlisten = await getCurrentWindow().onDragDropEvent(async (event) => {
+        const type = event.payload.type;
+        if (type === 'enter' || type === 'over') {
+          setIsDragOver(true);
+        } else if (type === 'leave') {
+          setIsDragOver(false);
+        } else if (type === 'drop') {
+          setIsDragOver(false);
+          const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
+          for (const p of paths) {
+            const lower = p.toLowerCase();
+            if (!textExts.some(ext => lower.endsWith(ext))) continue;
+            try {
+              const content = await readTextFile(p);
+              if (editorRef.current) {
+                editorRef.current.focus();
+                const escaped = content
+                  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                  .replace(/\n/g, '<br>');
+                document.execCommand('insertHTML', false, escaped);
+              }
+            } catch { /* 읽기 실패 시 무시 */ }
+          }
+        }
+      });
+    };
+    setup();
+    return () => { unlisten?.(); };
+  }, []);
+
+  const handleCollapse = async () => {
+    const win = getCurrentWindow();
+    if (isCollapsedRef.current) {
+      await win.setSize(new LogicalSize(320, preCollapseHeight.current));
+      isCollapsedRef.current = false;
+      setIsCollapsed(false);
+    } else {
+      try {
+        const sz = await win.innerSize();
+        const sf = await win.scaleFactor();
+        const logicalH = Math.round(sz.height / sf);
+        if (logicalH > 44) preCollapseHeight.current = logicalH;
+      } catch { /* 기본값 500 유지 */ }
+      isCollapsedRef.current = true;
+      setIsCollapsed(true);
+      await win.setSize(new LogicalSize(320, 32));
+    }
   };
 
-  const handleClose = () => {
-    console.log('🚪 종료 시작');
-    getCurrentWindow().close();
-  };
   // 음성 녹음 시작
   const handleStartRecording = async () => {
     try {
@@ -608,10 +749,11 @@ function App() {
               const history = JSON.parse(historyStr);
               
               // 새 메모를 맨 앞에 추가 (최신순)
+              const now = Date.now();
               history.unshift({
-                id: Date.now().toString(),
+                id: `${now}-${crypto.randomUUID()}`,
                 content: contentToSave,
-                timestamp: Date.now()
+                timestamp: now
               });
               
               // 최대 50개까지만 저장
@@ -768,32 +910,139 @@ function App() {
         backgroundColor: currentColor.bg,
         color: textColor,
         textShadow: textShadowStr,
-        boxShadow: opacity > 0.05 ? '0 8px 24px rgba(0,0,0,0.15)' : 'none',
+        boxShadow: opacity > 0.05 ? '0 2px 8px rgba(0,0,0,0.12)' : 'none',
         fontFamily: "'NotoSansKR', 'Malgun Gothic', sans-serif",
         transition: 'opacity 0.1s, color 0.3s, text-shadow 0.3s',
       }}
     >
-      {/* Windows Sticky Notes 헤더 */}
+      {/* ── 커스텀 타이틀바 (Windows 11 네이티브 스타일) ── */}
       <div
-        className="h-12 flex items-center justify-between px-3 border-b"
+        className="flex items-center select-none"
         style={{
-          borderBottomColor: 'rgba(0,0,0,0.1)',
+          height: 32,
+          flexShrink: 0,
           WebkitAppRegion: 'drag',
+          background: 'rgba(0,0,0,0.07)',
+          borderBottom: '1px solid rgba(0,0,0,0.07)',
         } as React.CSSProperties}
       >
-        <button
-          onClick={handleNewMemo}
-          className="w-9 h-9 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-lg"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title="새 메모"
-        >
-          ➕
-        </button>
-
-        {/* 투명도 슬라이더 (중앙) */}
+        {/* 앱 아이콘 + 제목 / 접힌 상태면 펼치기 플로팅 버튼 */}
         <div
-          style={{ WebkitAppRegion: 'no-drag', display: 'flex', alignItems: 'center', flex: 1, justifyContent: 'center', padding: '0 10px' } as React.CSSProperties}
+          style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 10,
+            WebkitAppRegion: 'drag', userSelect: 'none' } as React.CSSProperties}
         >
+          {isCollapsed ? (
+            /* 접힌 상태: 중앙 펼치기 버튼 */
+            <button
+              onClick={handleCollapse}
+              title="펼치기"
+              style={{
+                WebkitAppRegion: 'no-drag',
+                border: 'none', background: 'transparent', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 5, padding: '2px 6px',
+                borderRadius: 6, color: 'inherit', opacity: 0.55,
+                transition: 'opacity 0.15s, background 0.15s',
+                fontSize: 11, fontWeight: 500,
+              } as React.CSSProperties}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(0,0,0,0.1)'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '0.55'; e.currentTarget.style.background = 'transparent'; }}
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                <path d="M8.5 1.5H12.5V5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M5.5 12.5H1.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M12.5 1.5L8 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M1.5 12.5L6 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <span>AI 메모장</span>
+            </button>
+          ) : (
+            <>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ opacity: 0.9, flexShrink: 0 }}>
+                <rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor" opacity="0.15" stroke="currentColor" strokeWidth="1.2"/>
+                <line x1="3.5" y1="4.5" x2="10.5" y2="4.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+                <line x1="3.5" y1="7" x2="8.5" y2="7" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+                <line x1="3.5" y1="9.5" x2="7" y2="9.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.75, letterSpacing: 0.1 }}>AI 메모장</span>
+            </>
+          )}
+        </div>
+
+        {/* Windows 11 스타일 창 컨트롤 버튼 */}
+        <div style={{ display: 'flex', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* 최소화 */}
+          <button
+            onClick={() => getCurrentWindow().minimize()}
+            title="최소화"
+            style={{ width: 44, height: 32, border: 'none', background: 'transparent', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+              color: 'inherit', opacity: 0.75, transition: 'background 0.12s, opacity 0.12s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.12)'; e.currentTarget.style.opacity = '1'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0.75'; }}
+          >
+            <svg width="11" height="1" viewBox="0 0 11 1" fill="none">
+              <line x1="0.5" y1="0.5" x2="10.5" y2="0.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+          </button>
+
+          {/* 최대화 / 복원 */}
+          <button
+            onClick={async () => {
+              await getCurrentWindow().toggleMaximize();
+              const max = await getCurrentWindow().isMaximized().catch(() => false);
+              setIsMaximized(max);
+            }}
+            title={isMaximized ? '복원' : '최대화'}
+            style={{ width: 44, height: 32, border: 'none', background: 'transparent', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+              color: 'inherit', opacity: 0.75, transition: 'background 0.12s, opacity 0.12s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.12)'; e.currentTarget.style.opacity = '1'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0.75'; }}
+          >
+            {isMaximized ? (
+              /* 복원 아이콘 (두 겹 사각형) */
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <rect x="3" y="0.5" width="7.5" height="7.5" rx="1" stroke="currentColor" strokeWidth="1.1"/>
+                <path d="M0.5 3.5V10H7" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ) : (
+              /* 최대화 아이콘 (단순 사각형) */
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <rect x="0.5" y="0.5" width="10" height="10" rx="1" stroke="currentColor" strokeWidth="1.1"/>
+              </svg>
+            )}
+          </button>
+
+          {/* 닫기 */}
+          <button
+            onClick={() => getCurrentWindow().close()}
+            title="닫기"
+            style={{ width: 44, height: 32, border: 'none', background: 'transparent', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+              color: 'inherit', opacity: 0.75, transition: 'background 0.12s, opacity 0.12s, color 0.12s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(196,43,28,0.85)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.opacity = '1'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'inherit'; e.currentTarget.style.opacity = '0.75'; }}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <line x1="0.7" y1="0.7" x2="9.3" y2="9.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              <line x1="9.3" y1="0.7" x2="0.7" y2="9.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* ── 서브헤더: 투명도 슬라이더 + 접기 + 보관함 ── */}
+      <div
+        className="flex items-center select-none"
+        style={{
+          height: 44,
+          flexShrink: 0,
+          WebkitAppRegion: 'drag',
+          borderBottom: '1px solid rgba(0,0,0,0.1)',
+        } as React.CSSProperties}
+      >
+        {/* 슬라이더 — 왼쪽 여백 포함 full stretch */}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', padding: '0 12px', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <input
             type="range" min="0" max="1" step="0.05"
             value={opacity}
@@ -802,37 +1051,104 @@ function App() {
               setOpacity(v);
               localStorage.setItem('window_opacity', v.toString());
             }}
-            style={{
-              width: '100%', height: 4, cursor: 'pointer',
-              accentColor: 'rgba(0,0,0,0.5)',
-            }}
+            style={{ width: '100%', height: 3, cursor: 'pointer', accentColor: 'rgba(0,0,0,0.45)' }}
             title={`투명도: ${Math.round(opacity * 100)}%`}
           />
         </div>
 
+        {/* 오른쪽 버튼 그룹 */}
         <div
-          className="flex gap-1"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          className="flex items-center gap-1 pr-4"
+          style={{ WebkitAppRegion: 'no-drag', position: 'relative', zIndex: 10 } as React.CSSProperties}
         >
+          {/* 접기/펼치기 */}
+          <button
+            onClick={handleCollapse}
+            title={isCollapsed ? '펼치기' : '접기'}
+            className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110 active:scale-95"
+            style={{ background: 'rgba(0,0,0,0.07)', color: 'rgba(0,0,0,0.55)', cursor: 'pointer' }}
+          >
+            {isCollapsed ? (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M8.5 1.5H12.5V5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M5.5 12.5H1.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M12.5 1.5L8 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M1.5 12.5L6 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M1.5 5.5V1.5H5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M12.5 8.5V12.5H8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M1.5 1.5L6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M12.5 12.5L8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            )}
+          </button>
+
+          {/* 메모 보관함 */}
           <button
             onClick={() => openSettingsWindow(false)}
-            className="w-9 h-9 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-lg"
             title="메모 보관함"
+            className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110 active:scale-95"
+            style={{ background: 'rgba(0,0,0,0.07)', color: 'rgba(0,0,0,0.55)', cursor: 'pointer' }}
           >
-            ⋯
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="1.5" y="1.5" width="4.5" height="4.5" rx="1.2" fill="currentColor"/>
+              <rect x="8"   y="1.5" width="4.5" height="4.5" rx="1.2" fill="currentColor"/>
+              <rect x="1.5" y="8"   width="4.5" height="4.5" rx="1.2" fill="currentColor"/>
+              <rect x="8"   y="8"   width="4.5" height="4.5" rx="1.2" fill="currentColor"/>
+            </svg>
           </button>
-          <button
-            onClick={handleClose}
-            className="w-9 h-9 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-lg"
-            title="닫기"
-          >
-            ✕
-          </button>
+
+          {/* 종료 버튼 → 커스텀 타이틀바로 이전됨 */}
         </div>
       </div>
 
       {/* 텍스트 입력 영역 */}
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: isCollapsed ? 'none' : undefined }}>
+        {/* 파일 드롭 오버레이 */}
+        {isDragOver && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 50,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: 'rgba(99,102,241,0.12)',
+            border: '2px dashed rgba(99,102,241,0.55)',
+            borderRadius: 4,
+            pointerEvents: 'none',
+          }}>
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+              <rect x="4" y="6" width="24" height="20" rx="3" stroke="rgba(99,102,241,0.7)" strokeWidth="1.8"/>
+              <path d="M10 6V4a2 2 0 012-2h8a2 2 0 012 2v2" stroke="rgba(99,102,241,0.7)" strokeWidth="1.8" strokeLinecap="round"/>
+              <path d="M16 13v8M12 17l4-4 4 4" stroke="rgba(99,102,241,0.8)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <span style={{ fontSize: 12, color: 'rgba(99,102,241,0.85)', fontWeight: 600 }}>파일을 놓으세요</span>
+          </div>
+        )}
+        {/* 플로팅 새 메모 버튼 */}
+        <button
+          onClick={handleNewMemo}
+          className="flex items-center justify-center transition-all hover:scale-110 active:scale-95"
+          style={{
+            position: 'absolute',
+            bottom: 16,
+            right: 16,
+            width: 44,
+            height: 44,
+            borderRadius: '50%',
+            background: 'rgba(0,0,0,0.45)',
+            color: '#fff',
+            fontSize: 24,
+            fontWeight: 300,
+            lineHeight: 1,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            zIndex: 10,
+            border: 'none',
+            cursor: 'pointer',
+          } as React.CSSProperties}
+          title="새 메모"
+        >
+          +
+        </button>
         <div
           ref={editorRef}
         contentEditable
@@ -842,11 +1158,30 @@ function App() {
           console.log('⌨️ onInput 이벤트 발생:', target.innerHTML.substring(0, 100));
           setText(target.innerHTML);
         }}
-        onPaste={(e) => {
+        onPaste={async (e) => {
           e.preventDefault();
-          const pastedText = e.clipboardData.getData('text/plain');
-          
-          // 대용량 텍스트 경고 (5MB 초과)
+          const pastedText = e.clipboardData.getData('text/plain').trim();
+
+          // URL 감지 → 링크 카드
+          if (isUrl(pastedText)) {
+            const pid = `lp-${Date.now()}`;
+            document.execCommand('insertHTML', false,
+              `<span id="${pid}" contenteditable="false" style="display:inline-block;padding:5px 10px;border-radius:6px;background:rgba(0,0,0,0.07);font-size:12px;opacity:0.65;">` +
+              `🔗 링크 불러오는 중...</span>`
+            );
+            try {
+              const meta = await invoke<LinkPreviewMeta>('fetch_link_preview', { url: pastedText });
+              const ph = document.getElementById(pid);
+              if (ph) ph.outerHTML = buildLinkCardHtml(meta);
+            } catch {
+              const ph = document.getElementById(pid);
+              if (ph) ph.outerHTML = `<a href="${escHtml(pastedText)}" style="color:inherit;word-break:break-all;">${escHtml(pastedText)}</a>`;
+            }
+            if (editorRef.current) setText(editorRef.current.innerHTML);
+            return;
+          }
+
+          // 기존 코드/대용량 처리
           if (pastedText.length > 5 * 1024 * 1024) {
             const sizeMB = (pastedText.length / 1024 / 1024).toFixed(2);
             showAlert(`⚠️ 붙여넣기한 내용이 너무 큽니다 (${sizeMB}MB).\n\n파일로 저장하거나 분할해서 붙여넣기해주세요.`);
@@ -907,84 +1242,111 @@ function App() {
       </div>
 
       {/* 하단 포맷 툴바 */}
-      <div 
-        className="flex items-center justify-between px-5 py-2 border-t"
+      <div
+        className="flex items-center justify-between px-3 py-2.5 border-t"
         style={{
-          borderTopColor: 'rgba(0,0,0,0.1)',
+          borderTopColor: 'rgba(0,0,0,0.08)',
+          display: isCollapsed ? 'none' : undefined,
         }}
       >
-        <div className="flex gap-1">
-          <button 
-            onClick={() => applyFormat('bold')}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors"
-            title="굵게"
-          >
-            <span className="font-bold text-sm">B</span>
-          </button>
-          <button 
-            onClick={() => applyFormat('italic')}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors"
-            title="기울임꼴"
-          >
-            <span className="italic text-sm">I</span>
-          </button>
-          <button 
-            onClick={() => applyFormat('underline')}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors"
-            title="밑줄"
-          >
-            <span className="underline text-sm">U</span>
-          </button>
-          <button 
-            onClick={() => applyFormat('strikethrough')}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-sm"
-            title="취소선"
-          >
-            ab̶
-          </button>
-          <button 
+        {/* 서식 버튼 그룹 — macOS 스타일 라운드 pill */}
+        <div
+          className="flex items-center gap-0.5 px-2 py-1.5"
+          style={{
+            background: 'rgba(0,0,0,0.06)',
+            borderRadius: 12,
+          }}
+        >
+          {[
+            { cmd: 'bold'          as const, label: <span style={{ fontWeight: 800, fontSize: 14, fontFamily: 'system-ui' }}>B</span>,                                                  title: '굵게' },
+            { cmd: 'italic'        as const, label: <span style={{ fontStyle: 'italic', fontSize: 15, fontFamily: 'Georgia,serif', fontWeight: 700, letterSpacing: '-0.5px' }}>I</span>, title: '기울임꼴' },
+            { cmd: 'underline'     as const, label: <span style={{ textDecoration: 'underline', fontSize: 14, fontWeight: 700 }}>U</span>,                                               title: '밑줄' },
+            { cmd: 'strikethrough' as const, label: <span style={{ textDecoration: 'line-through', fontSize: 14, fontWeight: 700 }}>S</span>,                                            title: '취소선' },
+          ].map(({ cmd, label, title }) => (
+            <button
+              key={cmd}
+              onClick={() => applyFormat(cmd)}
+              title={title}
+              className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:bg-black/10 active:scale-95"
+              style={{ color: 'rgba(0,0,0,0.65)' }}
+            >
+              {label}
+            </button>
+          ))}
+
+          {/* 구분선 */}
+          <div style={{ width: 1, height: 18, background: 'rgba(0,0,0,0.12)', margin: '0 4px' }} />
+
+          {/* 글머리 기호 */}
+          <button
             onClick={() => applyFormat('bullet')}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-sm"
             title="글머리 기호"
+            className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:bg-black/10 active:scale-95"
+            style={{ color: 'rgba(0,0,0,0.6)' }}
           >
-            ≡
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <circle cx="1.8" cy="3"   r="1.5" fill="currentColor"/>
+              <rect   x="5"   y="2"    width="9" height="2" rx="1" fill="currentColor"/>
+              <circle cx="1.8" cy="7.5" r="1.5" fill="currentColor"/>
+              <rect   x="5"   y="6.5"  width="9" height="2" rx="1" fill="currentColor"/>
+              <circle cx="1.8" cy="12" r="1.5" fill="currentColor"/>
+              <rect   x="5"   y="11"  width="9" height="2" rx="1" fill="currentColor"/>
+            </svg>
           </button>
-          <button 
+
+          {/* 이미지 삽입 */}
+          <button
             onClick={handleInsertImage}
-            className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-sm"
-            title="이미지"
+            title="이미지 삽입"
+            className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:bg-black/10 active:scale-95"
+            style={{ color: 'rgba(0,0,0,0.6)' }}
           >
-            🖼️
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <rect x="1" y="2.5" width="13" height="10" rx="2" stroke="currentColor" strokeWidth="1.3"/>
+              <circle cx="4.8" cy="6" r="1.3" fill="currentColor"/>
+              <path d="M1.5 11.5L5 8L7.5 10.5L10 8L13.5 11.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </button>
         </div>
 
-        <div className="flex gap-2">
-          {/* 🎹 음성 녹음 버튼 (AI 버튼 왼쪽) */}
+        {/* 기능 버튼 그룹 */}
+        <div className="flex items-center gap-2">
+          {/* 음성 녹음 버튼 */}
           {!isRecording ? (
             <button
               onClick={handleStartRecording}
-              className="w-8 h-8 flex items-center justify-center rounded-full transition-all hover:scale-110"
-              style={{ background: '#ef4444', fontSize: 14, flexShrink: 0 }}
-              title="음성 녹음 시작 (받아쓰기 포함)"
+              title="음성 녹음 시작"
+              className="w-9 h-9 flex items-center justify-center rounded-full transition-all hover:scale-110 active:scale-95"
+              style={{
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                boxShadow: '0 2px 10px rgba(239,68,68,0.35)',
+                flexShrink: 0,
+              }}
             >
-              🎤
+              <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+                <rect x="4.5" y="1" width="6" height="8.5" rx="3" fill="white"/>
+                <path d="M2.5 8C2.5 11.04 4.7 13 7.5 13C10.3 13 12.5 11.04 12.5 8" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+                <line x1="7.5" y1="13" x2="7.5" y2="14.5" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+                <line x1="5.2" y1="14.5" x2="9.8" y2="14.5" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
             </button>
           ) : (
             <button
               onClick={handleStopRecording}
-              className="flex items-center gap-1 px-2 rounded-full transition-all"
+              title="녹음 중지 + MP3 저장"
+              className="flex items-center gap-1 rounded-full transition-all active:scale-95"
               style={{
-                background: '#ef4444',
-                fontSize: 12,
-                animation: 'pulse 1s infinite',
-                minWidth: 36,
-                height: 32,
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                boxShadow: '0 2px 12px rgba(239,68,68,0.5)',
+                animation: 'pulse 1.2s ease-in-out infinite',
+                height: 36, minWidth: 64, paddingInline: 10,
                 justifyContent: 'center',
               }}
-              title="녹음 중지 + MP3 저장"
             >
-              <span style={{ fontSize: 14 }}>⏹️</span>
-              <span style={{ color: '#fff', fontSize: 10, fontWeight: 700 }}>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="white">
+                <rect width="10" height="10" rx="2"/>
+              </svg>
+              <span style={{ color: '#fff', fontSize: 11, fontWeight: 700, fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>
                 {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')}
               </span>
             </button>
@@ -994,41 +1356,60 @@ function App() {
           <button
             onClick={handleCorrect}
             disabled={isLoading || !text.trim()}
-            className="px-3 py-1.5 rounded text-xs font-semibold transition-all hover:scale-105 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 h-9 rounded-full text-xs font-semibold transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
             style={{
-              backgroundColor: 'rgba(99, 102, 241, 0.85)',
+              paddingInline: 14,
+              background: isLoading ? 'rgba(99,102,241,0.5)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
               color: 'white',
+              boxShadow: '0 2px 10px rgba(99,102,241,0.32)',
+              letterSpacing: '0.03em',
+              fontSize: 13,
             }}
-            title="AI 교정"
+            title="AI 맞춤법 교정"
           >
-            {isLoading ? '⏳' : '✨ AI'}
+            {isLoading ? (
+              <svg className="animate-spin" width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <circle cx="6.5" cy="6.5" r="5" stroke="white" strokeWidth="1.5" strokeDasharray="15 7" opacity="0.9"/>
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M6 0.5L7.2 4.2H11.2L7.9 6.5L9.1 10.2L6 8L2.9 10.2L4.1 6.5L0.8 4.2H4.8L6 0.5Z" fill="white"/>
+              </svg>
+            )}
+            <span>AI</span>
           </button>
 
+          {/* 복사 버튼 */}
           {correctedText && (
             <button
               onClick={handleCopyToClipboard}
-              className="px-3 py-1.5 rounded text-xs font-semibold hover:bg-black/10 transition-colors"
-              title="복사"
+              title="교정 결과 복사"
+              className="w-9 h-9 flex items-center justify-center rounded-full transition-all hover:scale-110 active:scale-95"
+              style={{ background: 'rgba(0,0,0,0.07)', color: 'rgba(0,0,0,0.55)' }}
             >
-              📋
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <rect x="1" y="4" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M4 1H13V10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" opacity="0.6"/>
+              </svg>
             </button>
           )}
 
+          {/* 색상 변경 버튼 */}
           <button
             onClick={nextColor}
-            className="px-3 py-1.5 rounded text-xs hover:bg-black/10 transition-colors"
-            title={`색상: ${currentColor.name}`}
+            title={`색상 변경 · ${currentColor.name}`}
+            className="w-9 h-9 flex items-center justify-center rounded-full transition-all hover:scale-110 active:scale-95"
+            style={{ background: 'rgba(0,0,0,0.07)', color: 'rgba(0,0,0,0.55)' }}
           >
-            🎨
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <circle cx="7.5" cy="7.5" r="6" stroke="currentColor" strokeWidth="1.1" opacity="0.4"/>
+              <circle cx="4.5" cy="5"   r="1.7" fill="#ef4444"/>
+              <circle cx="10" cy="4.5"  r="1.7" fill="#22c55e"/>
+              <circle cx="10.5" cy="10" r="1.7" fill="#3b82f6"/>
+              <circle cx="4.5" cy="10.5" r="1.7" fill="#a855f7"/>
+            </svg>
           </button>
 
-          <button
-            onClick={handleMinimize}
-            className="px-3 py-1.5 rounded text-xs hover:bg-black/10 transition-colors"
-            title="최소화"
-          >
-            ➖
-          </button>
         </div>
       </div>
 

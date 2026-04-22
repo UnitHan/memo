@@ -4,14 +4,16 @@ import App from "./App";
 import { SettingsPage } from "./pages/SettingsPage";
 import { KeywordManagerPage } from "./pages/KeywordManagerPage";
 import "./index.css";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
-// 해시 라우팅으로 페이지 선택 (쿼리 파라미터 제거)
+// 창 라벨 기반 라우팅 (hash 라우팅 폴백 포함)
+const windowLabel = getCurrentWindow().label;
 const hash = window.location.hash.split('?')[0];
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {hash === '#settings' ? <SettingsPage /> : 
-     hash === '#keywords' ? <KeywordManagerPage /> : 
+    {windowLabel === 'settings' || hash === '#settings' ? <SettingsPage /> : 
+     windowLabel === 'keywords' || hash === '#keywords' ? <KeywordManagerPage /> : 
      <App />}
   </React.StrictMode>,
 );

@@ -50,3 +50,4 @@ python-backend/*.spec
 src-tauri/msix/staging/
 src-tauri/msix/*.msix
 src-tauri/msix/store-assets/
+src-tauri/msix/test-cert.*

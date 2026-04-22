@@ -3,6 +3,7 @@ use std::io::Write;
 use std::fs;
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
+use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -11,17 +12,63 @@ use std::os::windows::process::CommandExt;
 #[tauri::command]
 async fn correct_text(api_key: String, text: String) -> Result<String, String> {
     println!("🚀 텍스트 교정 요청 - 길이: {} 글자", text.len());
-    
-    #[cfg(target_os = "windows")]
-    let sidecar_path = "binaries/gemini-corrector.exe";
-    
-    #[cfg(not(target_os = "windows"))]
-    let sidecar_path = "binaries/gemini-corrector";
 
-    println!("🐍 Python Sidecar 실행: {}", sidecar_path);
+    // ── Sidecar 경로 결정 (MSIX / NSIS / 개발 환경 공통 대응) ──
+    //
+    // MSIX 환경에서 current_exe()는 실제 패키지 경로 대신
+    // App Execution Alias 경로(AppData\Local\Microsoft\WindowsApps\...)를
+    // 반환할 수 있음. 해당 경로에는 binaries\ 폴더가 없어 os error 3 발생.
+    //
+    // MSIX는 APPX_PACKAGE_PATH 환경변수를 실제 패키지 경로로 자동 설정하므로
+    // 이를 우선 사용하고, 없을 경우 current_exe() 기반 경로로 폴백.
+    let base_dir: std::path::PathBuf = {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(pkg_path) = std::env::var("APPX_PACKAGE_PATH") {
+                println!("📦 MSIX 패키지 경로 사용: {}", pkg_path);
+                std::path::PathBuf::from(pkg_path.trim_end_matches(['\\', '/']))
+            } else {
+                let exe = std::env::current_exe()
+                    .map_err(|e| format!("Cannot get exe path: {}", e))?;
+                exe.parent()
+                    .ok_or_else(|| "Cannot get exe directory".to_string())?
+                    .to_path_buf()
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("Cannot get exe path: {}", e))?;
+            exe.parent()
+                .ok_or_else(|| "Cannot get exe directory".to_string())?
+                .to_path_buf()
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    let sidecar_path = base_dir.join("binaries").join("gemini-corrector.exe");
+
+    #[cfg(not(target_os = "windows"))]
+    let sidecar_path = base_dir.join("binaries").join("gemini-corrector");
+
+    println!("🐍 Python Sidecar 경로: {}", sidecar_path.display());
+    println!("🔍 파일 존재 여부: {}", sidecar_path.exists());
+
+    // 파일 없으면 진단 정보 포함한 에러 반환
+    if !sidecar_path.exists() {
+        let appx_env = std::env::var("APPX_PACKAGE_PATH").unwrap_or_else(|_| "(없음)".to_string());
+        let exe_path = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "(알 수 없음)".to_string());
+        return Err(format!(
+            "Sidecar not found: {}\n(base_dir={}, APPX_PACKAGE_PATH={}, current_exe={})",
+            sidecar_path.display(),
+            base_dir.display(),
+            appx_env,
+            exe_path
+        ));
+    }
 
     // stdin으로 데이터 전송 (커맨드라인 인자보다 안전)
-    let mut command = Command::new(sidecar_path);
+    let mut command = Command::new(&sidecar_path);
     command
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::piped())
@@ -89,7 +136,114 @@ async fn correct_text(api_key: String, text: String) -> Result<String, String> {
     }
 }
 
-// 이미지 파일을 base64로 읽기
+// 링크 미리보기 메타데이터 추출
+fn extract_og(html: &str, property: &str) -> Option<String> {
+    // og:xxx → property="og:xxx" content="..."
+    // twitter:xxx → name="twitter:xxx" content="..."
+    let patterns = [
+        format!("property=\"{}\" content=\"", property),
+        format!("property='{}' content='", property),
+        format!("content=\"", ),  // fallback: 순서 바뀐 경우
+    ];
+
+    // property="og:title" content="..." 형태
+    let search1 = format!("property=\"{}\"", property);
+    let search2 = format!("name=\"{}\"", property);
+
+    for search in &[search1, search2] {
+        if let Some(idx) = html.find(search.as_str()) {
+            let after = &html[idx..];
+            if let Some(c_idx) = after.find("content=\"") {
+                let content_start = c_idx + 9;
+                let after2 = &after[content_start..];
+                if let Some(end) = after2.find('"') {
+                    let val = after2[..end].trim().to_string();
+                    if !val.is_empty() { return Some(val); }
+                }
+            }
+            if let Some(c_idx) = after.find("content='") {
+                let content_start = c_idx + 9;
+                let after2 = &after[content_start..];
+                if let Some(end) = after2.find('\'') {
+                    let val = after2[..end].trim().to_string();
+                    if !val.is_empty() { return Some(val); }
+                }
+            }
+        }
+    }
+    let _ = patterns; // suppress warning
+    None
+}
+
+fn extract_title(html: &str) -> Option<String> {
+    let start = html.find("<title")?;
+    let after = &html[start..];
+    let content_start = after.find('>')? + 1;
+    let after2 = &after[content_start..];
+    let end = after2.find("</title")?;
+    let val = after2[..end].trim().to_string();
+    if val.is_empty() { None } else { Some(val) }
+}
+
+fn extract_domain(url: &str) -> String {
+    let stripped = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    stripped.split('/').next().unwrap_or("").to_string()
+}
+
+#[tauri::command]
+async fn fetch_link_preview(url: String) -> Result<serde_json::Value, String> {
+    // URL 보안 검증
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("유효하지 않은 URL입니다".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .map_err(|e| format!("HTTP 클라이언트 생성 실패: {}", e))?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("요청 실패: {}", e))?;
+
+    let html = response
+        .text()
+        .await
+        .map_err(|e| format!("응답 읽기 실패: {}", e))?;
+
+    let title = extract_og(&html, "og:title")
+        .or_else(|| extract_og(&html, "twitter:title"))
+        .or_else(|| extract_title(&html))
+        .unwrap_or_default();
+
+    let description = extract_og(&html, "og:description")
+        .or_else(|| extract_og(&html, "twitter:description"))
+        .or_else(|| extract_og(&html, "description"))
+        .unwrap_or_default();
+
+    let image = extract_og(&html, "og:image")
+        .or_else(|| extract_og(&html, "twitter:image"))
+        .unwrap_or_default();
+
+    let domain = extract_domain(&url);
+    let favicon = format!("https://www.google.com/s2/favicons?domain={}&sz=32", domain);
+
+    Ok(serde_json::json!({
+        "title": title,
+        "description": description,
+        "image": image,
+        "domain": domain,
+        "url": url,
+        "favicon": favicon,
+    }))
+}
+
+
 #[tauri::command]
 async fn read_image_as_base64(path: String) -> Result<String, String> {
     println!("🖼️ 이미지 읽기: {}", path);
@@ -146,6 +300,38 @@ async fn save_audio_to_music(data_base64: String, filename: String) -> Result<St
     Ok(save_path.to_string_lossy().to_string())
 }
 
+// settings 창을 Rust에서 생성 (additional_browser_args 동일 적용)
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    // 기존 settings 창이 있으면 포커스
+    if let Some(window) = app.get_webview_window("settings") {
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App(std::path::PathBuf::from("/")),
+    )
+    .title("AI 메모장")
+    .inner_size(400.0, 640.0)
+    .center()
+    .resizable(false)
+    .always_on_top(true)
+    .decorations(true)
+    .transparent(false)
+    .visible(true);
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.additional_browser_args(
+        "--unsafely-treat-insecure-origin-as-secure=tauri://localhost http://tauri.localhost"
+    );
+
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -154,7 +340,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![correct_text, read_image_as_base64, save_audio_to_music])
+        .setup(|app| {
+            // 메인 윈도우를 Rust에서 직접 생성:
+            // Windows WebView2에서 SpeechRecognition은 보안 컨텍스트(HTTPS/localhost)에서만 동작.
+            // additional_browser_args로 tauri://localhost를 안전한 오리진으로 등록.
+            let builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App(std::path::PathBuf::from("/")),
+            )
+            .title("AI 메모장")
+            .inner_size(320.0, 500.0)
+            .position(100.0, 100.0)
+            .resizable(true)
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .visible(false);
+
+            #[cfg(target_os = "windows")]
+            let builder = builder.additional_browser_args(
+                "--unsafely-treat-insecure-origin-as-secure=tauri://localhost http://tauri.localhost"
+            );
+
+            builder.build()?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![correct_text, read_image_as_base64, save_audio_to_music, fetch_link_preview, open_settings_window])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

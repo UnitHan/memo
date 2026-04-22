@@ -4,7 +4,7 @@
  * 업데이트, 재설치 시 메모 손실 방지
  */
 
-import { BaseDirectory, writeTextFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { BaseDirectory, writeTextFile, readTextFile, exists, mkdir } from '@tauri-apps/plugin-fs';
 
 // 백업할 localStorage 키 목록
 const BACKUP_KEYS = [
@@ -29,9 +29,10 @@ export async function backupLocalStorage(): Promise<void> {
       backup[key] = localStorage.getItem(key);
     }
     
-    // JSON으로 저장
+    // JSON으로 저장 (디렉토리 없으면 먼저 생성)
     const json = JSON.stringify(backup, null, 2);
-    await writeTextFile(BACKUP_FILE, json, { baseDir: BaseDirectory.AppData });
+    await mkdir('', { baseDir: BaseDirectory.AppLocalData, recursive: true }).catch(() => {});
+    await writeTextFile(BACKUP_FILE, json, { baseDir: BaseDirectory.AppLocalData });
     
     console.log('💾 localStorage 백업 완료:', Object.keys(backup).length, '개 항목');
   } catch (error) {
@@ -45,14 +46,14 @@ export async function backupLocalStorage(): Promise<void> {
 export async function restoreLocalStorage(): Promise<boolean> {
   try {
     // 백업 파일 존재 확인
-    const fileExists = await exists(BACKUP_FILE, { baseDir: BaseDirectory.AppData });
+    const fileExists = await exists(BACKUP_FILE, { baseDir: BaseDirectory.AppLocalData });
     if (!fileExists) {
       console.log('📂 백업 파일 없음 (첫 실행)');
       return false;
     }
     
     // 백업 파일 읽기
-    const json = await readTextFile(BACKUP_FILE, { baseDir: BaseDirectory.AppData });
+    const json = await readTextFile(BACKUP_FILE, { baseDir: BaseDirectory.AppLocalData });
     const backup: Record<string, string | null> = JSON.parse(json);
     
     let restoredCount = 0;

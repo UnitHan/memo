@@ -41,6 +41,9 @@ export const SettingsPage = () => {
     onConfirm: () => void;
   }>({ isOpen: false, title: '', message: '', confirmText: '확인', onConfirm: () => {} });
 
+  // 삭제 취소용 스택 (Ctrl+Z) — ref 사용으로 StrictMode 이중 호출 방지
+  const deletedStackRef = useRef<MemoHistory[]>([]);
+
   useEffect(() => {
     const savedKey = loadApiKey();
     setApiKey(savedKey);
@@ -50,11 +53,14 @@ export const SettingsPage = () => {
       setOpacity(parseFloat(savedOpacity));
     }
 
-    // 메모 히스토리 로드
+    // 메모 히스토리 로드 (중복 id 제거)
     const savedHistory = localStorage.getItem('memo_history');
     if (savedHistory) {
       try {
-        setMemoHistory(JSON.parse(savedHistory));
+        const parsed: MemoHistory[] = JSON.parse(savedHistory);
+        const seen = new Set<string>();
+        const deduped = parsed.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
+        setMemoHistory(deduped);
       } catch (e) {
         console.error('메모 히스토리 로드 실패:', e);
       }
@@ -79,9 +85,11 @@ export const SettingsPage = () => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'memo_history' && e.newValue) {
         try {
-          const newHistory = JSON.parse(e.newValue);
-          setMemoHistory(newHistory);
-          console.log('📋 메모 히스토리 실시간 업데이트:', newHistory.length + '개');
+          const parsed: MemoHistory[] = JSON.parse(e.newValue);
+          const seen = new Set<string>();
+          const deduped = parsed.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
+          setMemoHistory(deduped);
+          console.log('📋 메모 히스토리 실시간 업데이트:', deduped.length + '개');
         } catch (err) {
           console.error('메모 히스토리 파싱 실패:', err);
         }
@@ -109,11 +117,25 @@ export const SettingsPage = () => {
     }
   };
 
-  // 메모 삭제
+  // 메모 삭제 (확인 팝업)
   const handleDeleteMemo = (id: string) => {
-    const updated = memoHistory.filter(m => m.id !== id);
-    setMemoHistory(updated);
-    localStorage.setItem('memo_history', JSON.stringify(updated));
+    const target = memoHistory.find(m => m.id === id);
+    if (!target) return;
+    setConfirmModal({
+      isOpen: true,
+      title: '메모 삭제',
+      message: '이 메모를 삭제하시겠습니까?\n삭제 후 Ctrl+Z로 복원할 수 있습니다.',
+      confirmText: '삭제',
+      onConfirm: () => {
+        deletedStackRef.current = [...deletedStackRef.current, target];
+        setMemoHistory(current => {
+          const updated = current.filter(m => m.id !== id);
+          localStorage.setItem('memo_history', JSON.stringify(updated));
+          return updated;
+        });
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      },
+    });
   };
 
   // 검색어에 매칭되는 메모 인덱스 목록
@@ -149,6 +171,26 @@ export const SettingsPage = () => {
     if (matchedIndices.length === 0) return;
     setSearchMatchIndex(prev => (prev + 1) % matchedIndices.length);
   };
+
+  // Ctrl+Z: 마지막 삭제된 메모 복원
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        const stack = deletedStackRef.current;
+        if (stack.length === 0) return;
+        const restored = stack[stack.length - 1];
+        deletedStackRef.current = stack.slice(0, -1);
+        setMemoHistory(current => {
+          const merged = [...current, restored].sort((a, b) => b.timestamp - a.timestamp);
+          localStorage.setItem('memo_history', JSON.stringify(merged));
+          return merged;
+        });
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // 모든 히스토리 삭제 (확인 팝업)
   const handleClearHistory = () => {
@@ -447,6 +489,13 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
                   {matchedIndices.length > 0 ? `${searchMatchIndex + 1}/${matchedIndices.length}` : '0/0'}
                 </span>
               )}
+              {searchQuery && (
+                <button
+                  onClick={() => { setSearchQuery(''); setSearchMatchIndex(0); searchInputRef.current?.focus(); }}
+                  title="검색어 지우기"
+                  style={{ width: 18, height: 18, borderRadius: '50%', border: 'none', cursor: 'pointer', background: '#90A4AE', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, flexShrink: 0, lineHeight: 1 }}
+                >✕</button>
+              )}
             </div>
             <button onClick={handleSearchPrev} disabled={matchedIndices.length === 0}
               style={{ width: 30, height: 30, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.18)', color: '#fff', opacity: matchedIndices.length === 0 ? 0.35 : 1, fontSize: 14 }}>∧</button>
@@ -492,7 +541,7 @@ ${'='.repeat(50)}\n\n${plainText}\n\n${'='.repeat(50)}\nPowered by QA Bulls © 2
                 const cardBorder = isFocused ? '#7C3AED' : isMatch ? '#CE93D8' : 'transparent';
 
                 return (
-                  <div key={memo.id} style={{ background: cardBg, borderRadius: 16, padding: 14, boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: `2px solid ${cardBorder}` }}>
+                  <div key={`${memo.id}-${idx}`} style={{ background: cardBg, borderRadius: 16, padding: 14, boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: `2px solid ${cardBorder}` }}>
 
                     {/* 검색 일치 태그 */}
                     {isMatch && (
